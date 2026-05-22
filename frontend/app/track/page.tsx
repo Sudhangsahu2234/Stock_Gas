@@ -14,6 +14,10 @@ type OrderLookup = {
   paymentMethod: string;
   address: string;
   status: string;
+  amountInr?: number | null;
+  currency?: string | null;
+  paymentStatus?: string | null;
+  paymentGateway?: string | null;
   createdAt: string;
 };
 
@@ -325,6 +329,20 @@ export default function TrackOrderPage() {
                       <span>Payment</span>
                       <strong>{order.paymentMethod}</strong>
                     </div>
+                    {order.amountInr ? (
+                      <div className="track-result-item">
+                        <span>Amount</span>
+                        <strong>
+                          {order.currency ?? "INR"} {order.amountInr}
+                        </strong>
+                      </div>
+                    ) : null}
+                    {order.paymentStatus ? (
+                      <div className="track-result-item">
+                        <span>Payment status</span>
+                        <strong>{order.paymentStatus}</strong>
+                      </div>
+                    ) : null}
                     <div className="track-result-item track-result-item-wide">
                       <span>Delivery address</span>
                       <strong>{order.address}</strong>

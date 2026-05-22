@@ -682,6 +682,11 @@ section[id] {
   color: var(--ink);
 }
 
+.field-help {
+  color: var(--ink-muted);
+  line-height: 1.6;
+}
+
 .field input,
 .field select,
 .field textarea {

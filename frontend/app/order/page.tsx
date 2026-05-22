@@ -14,6 +14,10 @@ type OrderReceipt = {
   paymentMethod: string;
   address: string;
   status: string;
+  amountInr?: number | null;
+  currency?: string | null;
+  paymentStatus?: string | null;
+  paymentGateway?: string | null;
   createdAt: string;
 };
 
@@ -23,6 +27,7 @@ const emptyForm = {
   cylinderSizeKg: "12.5",
   quantity: "1",
   paymentMethod: "Cash on delivery",
+  amountInr: "",
   address: ""
 };
 
@@ -33,10 +38,16 @@ const bookingPromises = [
 ];
 
 const followUpSteps = [
-  "Your request is captured by the existing order API and stored for operational follow-up.",
-  "Operations teams can confirm dispatch timing and coordinate service updates from the backend flow.",
+  "Cash and offline payment methods create the booking immediately for operational follow-up.",
+  "Razorpay payments are verified first, and the LPG order is saved only after the payment succeeds.",
   "If you need help after booking, use the Contact Us section on the homepage for support escalation."
 ];
+
+type RazorpayOrderResponse = {
+  checkoutUrl: string;
+};
+
+
 
 export default function OrderPage() {
   const [form, setForm] = useState(emptyForm);
@@ -56,8 +67,43 @@ export default function OrderPage() {
         cylinderSizeKg: Number(form.cylinderSizeKg),
         quantity: Number(form.quantity),
         paymentMethod: form.paymentMethod,
+        amountInr: form.amountInr ? Number(form.amountInr) : undefined,
         address: form.address.trim()
       };
+
+      if (payload.paymentMethod === "Razorpay") {
+        if (!payload.amountInr || payload.amountInr <= 0) {
+          throw new Error("Enter a valid amount in INR before opening Razorpay.");
+        }
+
+        const createPaymentRes = await fetch(`${getApiBase()}/api/payments/razorpay/order`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload)
+        });
+
+        const paymentOrderData = (await createPaymentRes.json().catch(() => ({}))) as
+          | RazorpayOrderResponse
+          | { error?: string };
+
+        if (!createPaymentRes.ok) {
+          const paymentOrderError = paymentOrderData as { error?: string };
+          throw new Error(
+            typeof paymentOrderError.error === "string"
+              ? paymentOrderError.error
+              : "Razorpay payment order could not be created."
+          );
+        }
+
+        const paymentOrder = paymentOrderData as RazorpayOrderResponse;
+
+        // Store booking data for verification after redirect
+        sessionStorage.setItem('pendingBooking', JSON.stringify(payload));
+
+        // Redirect to Razorpay checkout
+        window.location.href = paymentOrder.checkoutUrl;
+        return;
+      }
 
       const res = await fetch(`${getApiBase()}/api/orders`, {
         method: "POST",
@@ -79,6 +125,10 @@ export default function OrderPage() {
         quantity: data.quantity ?? payload.quantity,
         paymentMethod: data.paymentMethod ?? payload.paymentMethod,
         address: data.address ?? payload.address,
+        amountInr: data.amountInr ?? null,
+        currency: data.currency ?? null,
+        paymentStatus: data.paymentStatus ?? "Pending",
+        paymentGateway: data.paymentGateway ?? null,
         status: data.status ?? "Pending",
         createdAt: data.createdAt ?? new Date().toISOString()
       });
@@ -138,7 +188,7 @@ export default function OrderPage() {
             <h2>Customer-friendly request flow</h2>
             <ul className="hero-side-list">
               <li>Supported cylinder sizes: 3kg, 5kg, 6kg, 12.5kg, and 50kg.</li>
-              <li>Payment preferences include cash on delivery, transfer, card/POS, and wallet.</li>
+              <li>Payment preferences include cash on delivery, transfer, card/POS, wallet, and Razorpay.</li>
               <li>Use the new Track Order page to search by phone number or order reference.</li>
             </ul>
           </aside>
@@ -221,8 +271,28 @@ export default function OrderPage() {
                   <option>Bank transfer</option>
                   <option>Card / POS</option>
                   <option>Wallet</option>
+                  <option>Razorpay</option>
                 </select>
               </label>
+
+              {form.paymentMethod === "Razorpay" && (
+                <label className="field">
+                  <span>Amount to pay (INR)</span>
+                  <input
+                    required
+                    min="1"
+                    step="0.01"
+                    type="number"
+                    value={form.amountInr}
+                    onChange={(event) => setForm((current) => ({ ...current, amountInr: event.target.value }))}
+                    placeholder="Enter payable amount in INR"
+                    inputMode="decimal"
+                  />
+                  <small className="field-help">
+                    Razorpay will open a secure payment window. The order will be saved after payment verification.
+                  </small>
+                </label>
+              )}
 
               <label className="field">
                 <span>Delivery address</span>
@@ -236,7 +306,7 @@ export default function OrderPage() {
               </label>
 
               <button className="btn btn-primary btn-block" type="submit" disabled={submitting}>
-                {submitting ? "Submitting booking..." : "Place Order"}
+                {submitting ? "Processing..." : form.paymentMethod === "Razorpay" ? "Pay With Razorpay" : "Place Order"}
               </button>
             </form>
           </section>
@@ -288,6 +358,20 @@ export default function OrderPage() {
                       <span>Payment</span>
                       <strong>{receipt.paymentMethod}</strong>
                     </div>
+                    {receipt.amountInr ? (
+                      <div className="receipt-row">
+                        <span>Amount</span>
+                        <strong>
+                          {receipt.currency ?? "INR"} {receipt.amountInr}
+                        </strong>
+                      </div>
+                    ) : null}
+                    {receipt.paymentStatus ? (
+                      <div className="receipt-row">
+                        <span>Payment status</span>
+                        <strong>{receipt.paymentStatus}</strong>
+                      </div>
+                    ) : null}
                     <div className="receipt-row">
                       <span>Created</span>
                       <strong>{new Date(receipt.createdAt).toLocaleString()}</strong>
