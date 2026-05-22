@@ -8,7 +8,6 @@ import helmet from "helmet";
 import jwt from "jsonwebtoken";
 import morgan from "morgan";
 import path from "path";
-import pg from "pg";
 import { fileURLToPath } from "url";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -1304,7 +1303,14 @@ const startServer = async () => {
   }
 };
 
-startServer().catch((err) => {
-  console.error("Failed to start backend:", err);
-  process.exit(1);
-});
+// ── Exports for Vercel serverless entry point (api/index.js) ──
+export { app, initializeDatabase, cleanupRetentionData, seedDefaultAdmin };
+
+// Only start the HTTP listener when running locally (not on Vercel).
+// Vercel sets the VERCEL environment variable automatically.
+if (!process.env.VERCEL) {
+  startServer().catch((err) => {
+    console.error("Failed to start backend:", err);
+    process.exit(1);
+  });
+}
