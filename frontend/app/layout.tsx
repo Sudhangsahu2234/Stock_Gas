@@ -2,13 +2,13 @@ import type { Metadata } from "next";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "Stockgap Fuels | LPG Cylinder Distribution Platform",
+  title: "StockGas | Fuelling Nigeria's Future",
   description:
-    "Stockgap Fuels is building a digital LPG cylinder distribution platform for booking, tracking, dealer operations, and customer support across Nigeria.",
+    "StockGas is a digital LPG cylinder distribution platform for ordering, payment, tracking, terminal information, and customer support across Nigeria.",
   icons: {
-    icon: "/stockgas-logo.jpeg",
-    shortcut: "/stockgas-logo.jpeg",
-    apple: "/stockgas-logo.jpeg"
+    icon: "/stockgas-logo.png",
+    shortcut: "/stockgas-logo.png",
+    apple: "/stockgas-logo.png"
   }
 };
 

@@ -3,7 +3,17 @@
 import Image from "next/image";
 import Link from "next/link";
 import { useEffect, useState } from "react";
+import { formatInr } from "@/lib/catalog";
 import { getApiBase } from "@/lib/api";
+
+type OrderItem = {
+  productId: string;
+  name: string;
+  sizeKg: number;
+  quantity: number;
+  unitPriceInr: number;
+  lineTotalInr: number;
+};
 
 type OrderReceipt = {
   id: string;
@@ -19,6 +29,7 @@ type OrderReceipt = {
   paymentStatus?: string | null;
   paymentGateway?: string | null;
   createdAt: string;
+  items?: OrderItem[];
 };
 
 export default function SuccessPage() {
@@ -30,15 +41,15 @@ export default function SuccessPage() {
     const verifyPayment = async () => {
       try {
         const urlParams = new URLSearchParams(window.location.search);
-        const razorpayPaymentId = urlParams.get('razorpay_payment_id');
-        const razorpayOrderId = urlParams.get('razorpay_order_id');
-        const razorpaySignature = urlParams.get('razorpay_signature');
+        const razorpayPaymentId = urlParams.get("razorpay_payment_id");
+        const razorpayOrderId = urlParams.get("razorpay_order_id");
+        const razorpaySignature = urlParams.get("razorpay_signature");
 
         if (!razorpayPaymentId || !razorpayOrderId || !razorpaySignature) {
           throw new Error("Payment details are missing from the URL.");
         }
 
-        const bookingData = sessionStorage.getItem('pendingBooking');
+        const bookingData = sessionStorage.getItem("pendingBooking");
         if (!bookingData) {
           throw new Error("Booking data not found. Please try placing the order again.");
         }
@@ -75,7 +86,7 @@ export default function SuccessPage() {
         });
 
         // Clear the stored booking data only on success
-        sessionStorage.removeItem('pendingBooking');
+        sessionStorage.removeItem("pendingBooking");
       } catch (error) {
         setMessage({
           type: "err",
@@ -108,7 +119,7 @@ export default function SuccessPage() {
           <div className="success-content">
             <Link href="/" className="logo-link" aria-label="Stockgap Fuels home">
               <Image
-                src="/stockgas-logo.jpeg"
+                src="/stockgas-logo.png"
                 alt="STOCKGAS logo"
                 width={220}
                 height={170}
@@ -153,10 +164,8 @@ export default function SuccessPage() {
                 </div>
                 {receipt.amountInr && (
                   <div className="receipt-row">
-                    <span>Amount</span>
-                    <strong>
-                      {receipt.currency ?? "INR"} {receipt.amountInr}
-                    </strong>
+                    <span>Total</span>
+                    <strong>{formatInr(receipt.amountInr)}</strong>
                   </div>
                 )}
                 {receipt.paymentStatus && (
@@ -169,6 +178,18 @@ export default function SuccessPage() {
                   <span>Created</span>
                   <strong>{new Date(receipt.createdAt).toLocaleString()}</strong>
                 </div>
+                {receipt.items && receipt.items.length > 0 ? (
+                  <div className="receipt-items">
+                    {receipt.items.map((item) => (
+                      <div className="receipt-item" key={`${receipt.id}-${item.productId}`}>
+                        <span>
+                          {item.quantity} x {item.name}
+                        </span>
+                        <strong>{formatInr(item.lineTotalInr)}</strong>
+                      </div>
+                    ))}
+                  </div>
+                ) : null}
                 <Link className="btn btn-primary" href={`/track?reference=${encodeURIComponent(receipt.id)}`}>
                   Track This Order
                 </Link>

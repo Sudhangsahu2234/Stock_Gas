@@ -2,8 +2,18 @@
 
 import Image from "next/image";
 import Link from "next/link";
-import { useState, type FormEvent } from "react";
+import { useMemo, useState, type FormEvent } from "react";
+import { formatInr, productCatalog, type CatalogProduct } from "@/lib/catalog";
 import { getApiBase } from "@/lib/api";
+
+type OrderItem = {
+  productId: string;
+  name: string;
+  sizeKg: number;
+  quantity: number;
+  unitPriceInr: number;
+  lineTotalInr: number;
+};
 
 type OrderReceipt = {
   id: string;
@@ -19,41 +29,111 @@ type OrderReceipt = {
   paymentStatus?: string | null;
   paymentGateway?: string | null;
   createdAt: string;
+  items?: OrderItem[];
 };
 
 const emptyForm = {
   customerName: "",
   phone: "",
-  cylinderSizeKg: "12.5",
-  quantity: "1",
   paymentMethod: "Cash on delivery",
-  amountInr: "",
   address: ""
 };
 
-const bookingPromises = [
-  "Customer-facing booking form for cylinder size, quantity, payment method, and delivery address.",
-  "A cleaner order journey without publicly exposing all saved orders on the page.",
-  "Faster handoff into operations, support, and follow-up once a booking is submitted."
-];
-
-const followUpSteps = [
-  "Cash and offline payment methods create the booking immediately for operational follow-up.",
-  "Razorpay payments are verified first, and the LPG order is saved only after the payment succeeds.",
-  "If you need help after booking, use the Contact Us section on the homepage for support escalation."
-];
+const initialCart: Record<string, number> = {
+  "cyl-12-5kg": 1
+};
 
 type RazorpayOrderResponse = {
   checkoutUrl: string;
 };
 
+function buildCartItems(cart: Record<string, number>) {
+  return productCatalog
+    .map((product) => {
+      const quantity = cart[product.id] || 0;
+      return {
+        product,
+        quantity,
+        lineTotalInr: product.priceInr * quantity
+      };
+    })
+    .filter((item) => item.quantity > 0);
+}
 
+function ProductCartCard({
+  product,
+  quantity,
+  onIncrease,
+  onDecrease,
+  onSetQuantity
+}: {
+  product: CatalogProduct;
+  quantity: number;
+  onIncrease: () => void;
+  onDecrease: () => void;
+  onSetQuantity: (quantity: number) => void;
+}) {
+  return (
+    <article className={`cart-product-card ${quantity > 0 ? "cart-product-card-active" : ""}`}>
+      <div className="cart-product-image">
+        <Image src={product.image} alt={product.name} fill className="product-image" />
+        <span className="product-badge">{product.badge}</span>
+      </div>
+      <div className="cart-product-body">
+        <h3>{product.name}</h3>
+        <p>{product.description}</p>
+        <div className="product-price-row">
+          <strong>{formatInr(product.priceInr)}</strong>
+          <span>{product.availability}</span>
+        </div>
+        <div className="quantity-control" aria-label={`${product.name} quantity`}>
+          <button type="button" onClick={onDecrease} disabled={quantity === 0}>
+            -
+          </button>
+          <input
+            aria-label={`${product.name} quantity value`}
+            min={0}
+            type="number"
+            value={quantity}
+            onChange={(event) => onSetQuantity(Number(event.target.value))}
+          />
+          <button type="button" onClick={onIncrease}>
+            +
+          </button>
+        </div>
+      </div>
+    </article>
+  );
+}
 
 export default function OrderPage() {
   const [form, setForm] = useState(emptyForm);
+  const [cart, setCart] = useState<Record<string, number>>(initialCart);
   const [submitting, setSubmitting] = useState(false);
   const [message, setMessage] = useState<{ type: "ok" | "err"; text: string } | null>(null);
   const [receipt, setReceipt] = useState<OrderReceipt | null>(null);
+
+  const cartItems = useMemo(() => buildCartItems(cart), [cart]);
+  const subtotal = cartItems.reduce((sum, item) => sum + item.lineTotalInr, 0);
+  const deliveryFee = 0;
+  const total = subtotal + deliveryFee;
+  const totalQuantity = cartItems.reduce((sum, item) => sum + item.quantity, 0);
+
+  const setProductQuantity = (productId: string, nextQuantity: number) => {
+    const safeQuantity = Number.isFinite(nextQuantity) ? Math.max(0, Math.floor(nextQuantity)) : 0;
+    setCart((current) => ({ ...current, [productId]: safeQuantity }));
+  };
+
+  const buildPayload = () => ({
+    customerName: form.customerName.trim(),
+    phone: form.phone.trim(),
+    paymentMethod: form.paymentMethod,
+    address: form.address.trim(),
+    items: cartItems.map((item) => ({
+      productId: item.product.id,
+      quantity: item.quantity
+    }))
+  });
 
   const onSubmit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -61,21 +141,13 @@ export default function OrderPage() {
     setMessage(null);
 
     try {
-      const payload = {
-        customerName: form.customerName.trim(),
-        phone: form.phone.trim(),
-        cylinderSizeKg: Number(form.cylinderSizeKg),
-        quantity: Number(form.quantity),
-        paymentMethod: form.paymentMethod,
-        amountInr: form.amountInr ? Number(form.amountInr) : undefined,
-        address: form.address.trim()
-      };
+      if (cartItems.length === 0 || total <= 0) {
+        throw new Error("Add at least one LPG cylinder to the cart before placing an order.");
+      }
+
+      const payload = buildPayload();
 
       if (payload.paymentMethod === "Razorpay") {
-        if (!payload.amountInr || payload.amountInr <= 0) {
-          throw new Error("Enter a valid amount in INR before opening Razorpay.");
-        }
-
         const createPaymentRes = await fetch(`${getApiBase()}/api/payments/razorpay/order`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -95,13 +167,8 @@ export default function OrderPage() {
           );
         }
 
-        const paymentOrder = paymentOrderData as RazorpayOrderResponse;
-
-        // Store booking data for verification after redirect
-        sessionStorage.setItem('pendingBooking', JSON.stringify(payload));
-
-        // Redirect to Razorpay checkout
-        window.location.href = paymentOrder.checkoutUrl;
+        sessionStorage.setItem("pendingBooking", JSON.stringify(payload));
+        window.location.href = (paymentOrderData as RazorpayOrderResponse).checkoutUrl;
         return;
       }
 
@@ -117,27 +184,14 @@ export default function OrderPage() {
         throw new Error(typeof data.error === "string" ? data.error : "Order could not be saved.");
       }
 
-      setReceipt({
-        id: data.id ?? "Pending confirmation",
-        customerName: data.customerName ?? payload.customerName,
-        phone: data.phone ?? payload.phone,
-        cylinderSizeKg: data.cylinderSizeKg ?? payload.cylinderSizeKg,
-        quantity: data.quantity ?? payload.quantity,
-        paymentMethod: data.paymentMethod ?? payload.paymentMethod,
-        address: data.address ?? payload.address,
-        amountInr: data.amountInr ?? null,
-        currency: data.currency ?? null,
-        paymentStatus: data.paymentStatus ?? "Pending",
-        paymentGateway: data.paymentGateway ?? null,
-        status: data.status ?? "Pending",
-        createdAt: data.createdAt ?? new Date().toISOString()
-      });
-
+      const nextReceipt = data as OrderReceipt;
+      setReceipt(nextReceipt);
       setMessage({
         type: "ok",
-        text: `Booking submitted successfully. Reference: ${data.id ?? "pending"}.`
+        text: `Booking submitted successfully. Reference: ${nextReceipt.id ?? "pending"}.`
       });
       setForm(emptyForm);
+      setCart(initialCart);
     } catch (error) {
       setMessage({
         type: "err",
@@ -150,256 +204,220 @@ export default function OrderPage() {
 
   return (
     <main className="order-page">
+      <header className="site-header">
+        <div className="brand-stripe" />
+        <div className="shell site-header-inner">
+          <Link href="/" className="brand-lockup" aria-label="StockGas home">
+            <Image src="/stockgas-logo.png" alt="STOCKGAS logo" width={170} height={132} className="brand-logo-image" priority />
+            <span className="wordmark" aria-hidden="true">
+              <span>STOCK</span>
+              <strong>GAS</strong>
+            </span>
+          </Link>
+          <nav className="site-nav" aria-label="Order navigation">
+            <Link className="nav-link" href="/">
+              Home
+            </Link>
+            <Link className="nav-link" href="/track">
+              Track
+            </Link>
+            <Link className="nav-link" href="/terminal-information">
+              Terminal
+            </Link>
+          </nav>
+        </div>
+      </header>
+
       <section className="order-hero">
         <div className="shell order-hero-grid">
           <div className="order-hero-copy">
-            <Link href="/" className="order-logo-link" aria-label="Stockgap Fuels home">
-              <Image
-                src="/stockgas-logo.jpeg"
-                alt="STOCKGAS logo"
-                width={220}
-                height={170}
-                className="order-logo-image"
-                priority
-              />
-            </Link>
-            <Link href="/" className="crumb-link">
-              ← Back to homepage
-            </Link>
-            <span className="eyebrow">Order Now / Booking</span>
-            <h1>Book LPG cylinder delivery with Stockgap Fuels.</h1>
-            <p className="section-lead">
-              Use the dedicated booking page to submit a cylinder request, choose your preferred payment method, and
-              give the operations team the delivery details they need to fulfil the order.
+            <span className="section-tag red">Order Cylinder</span>
+            <h1>Build your StockGas LPG cart.</h1>
+            <p>
+              Add multiple cylinder sizes, review the calculated INR total, then submit for operational follow-up or
+              pay through the existing Razorpay checkout.
             </p>
-
-            <div className="promise-list">
-              {bookingPromises.map((promise) => (
-                <div className="promise-item" key={promise}>
-                  <span className="promise-dot" />
-                  <p>{promise}</p>
-                </div>
-              ))}
+            <div className="order-hero-actions">
+              <Link href="/" className="btn btn-outline">
+                Back to Homepage
+              </Link>
+              <Link href="/track" className="btn btn-outline">
+                Track Existing Order
+              </Link>
             </div>
           </div>
-
-          <aside className="order-hero-panel">
-            <span className="card-kicker">Booking scope</span>
-            <h2>Customer-friendly request flow</h2>
-            <ul className="hero-side-list">
-              <li>Supported cylinder sizes: 3kg, 5kg, 6kg, 12.5kg, and 50kg.</li>
-              <li>Payment preferences include cash on delivery, transfer, card/POS, wallet, and Razorpay.</li>
-              <li>Use the new Track Order page to search by phone number or order reference.</li>
-            </ul>
-          </aside>
+          <div className="order-hero-photo">
+            <Image src="/stockgas-plant-line.jpeg" alt="StockGas LPG cylinders in filling plant" fill className="terminal-photo" priority />
+          </div>
         </div>
       </section>
 
       <section className="section order-content">
         <div className="shell order-content-grid">
-          <section className="panel order-form-panel">
-            <div className="panel-heading">
-              <span className="eyebrow">Booking Form</span>
-              <h2>Submit a new LPG order</h2>
+          <section className="cart-builder-panel">
+            <div className="section-heading">
+              <span className="section-tag">Cylinder Cart</span>
+              <h2>Select cylinder sizes and quantities.</h2>
+              <p>Demo prices power the calculation until final StockGas prices are supplied.</p>
             </div>
 
-            {message && (
-              <div className={`feedback-banner ${message.type === "ok" ? "feedback-ok" : "feedback-err"}`}>
-                {message.text}
-              </div>
-            )}
-
-            <form className="order-form" onSubmit={onSubmit}>
-              <label className="field">
-                <span>Full name</span>
-                <input
-                  required
-                  value={form.customerName}
-                  onChange={(event) => setForm((current) => ({ ...current, customerName: event.target.value }))}
-                  placeholder="Customer name"
-                  autoComplete="name"
+            <div className="cart-products-grid">
+              {productCatalog.map((product) => (
+                <ProductCartCard
+                  key={product.id}
+                  product={product}
+                  quantity={cart[product.id] || 0}
+                  onIncrease={() => setProductQuantity(product.id, (cart[product.id] || 0) + 1)}
+                  onDecrease={() => setProductQuantity(product.id, (cart[product.id] || 0) - 1)}
+                  onSetQuantity={(quantity) => setProductQuantity(product.id, quantity)}
                 />
-              </label>
-
-              <label className="field">
-                <span>Phone</span>
-                <input
-                  required
-                  value={form.phone}
-                  onChange={(event) => setForm((current) => ({ ...current, phone: event.target.value }))}
-                  placeholder="+234 ..."
-                  autoComplete="tel"
-                />
-              </label>
-
-              <div className="form-row">
-                <label className="field">
-                  <span>Cylinder size</span>
-                  <select
-                    required
-                    value={form.cylinderSizeKg}
-                    onChange={(event) => setForm((current) => ({ ...current, cylinderSizeKg: event.target.value }))}
-                  >
-                    {["3", "5", "6", "12.5", "50"].map((size) => (
-                      <option key={size} value={size}>
-                        {size} kg
-                      </option>
-                    ))}
-                  </select>
-                </label>
-
-                <label className="field">
-                  <span>Quantity</span>
-                  <input
-                    required
-                    min={1}
-                    type="number"
-                    value={form.quantity}
-                    onChange={(event) => setForm((current) => ({ ...current, quantity: event.target.value }))}
-                  />
-                </label>
-              </div>
-
-              <label className="field">
-                <span>Payment method</span>
-                <select
-                  required
-                  value={form.paymentMethod}
-                  onChange={(event) => setForm((current) => ({ ...current, paymentMethod: event.target.value }))}
-                >
-                  <option>Cash on delivery</option>
-                  <option>Bank transfer</option>
-                  <option>Card / POS</option>
-                  <option>Wallet</option>
-                  <option>Razorpay</option>
-                </select>
-              </label>
-
-              {form.paymentMethod === "Razorpay" && (
-                <label className="field">
-                  <span>Amount to pay (INR)</span>
-                  <input
-                    required
-                    min="1"
-                    step="0.01"
-                    type="number"
-                    value={form.amountInr}
-                    onChange={(event) => setForm((current) => ({ ...current, amountInr: event.target.value }))}
-                    placeholder="Enter payable amount in INR"
-                    inputMode="decimal"
-                  />
-                  <small className="field-help">
-                    Razorpay will open a secure payment window. The order will be saved after payment verification.
-                  </small>
-                </label>
-              )}
-
-              <label className="field">
-                <span>Delivery address</span>
-                <textarea
-                  required
-                  rows={4}
-                  value={form.address}
-                  onChange={(event) => setForm((current) => ({ ...current, address: event.target.value }))}
-                  placeholder="Street, area, city"
-                />
-              </label>
-
-              <button className="btn btn-primary btn-block" type="submit" disabled={submitting}>
-                {submitting ? "Processing..." : form.paymentMethod === "Razorpay" ? "Pay With Razorpay" : "Place Order"}
-              </button>
-            </form>
+              ))}
+            </div>
           </section>
 
           <aside className="order-sidebar">
-            <section className="panel">
+            <section className="panel cart-summary-panel">
               <div className="panel-heading">
-                <span className="eyebrow">What Happens Next</span>
-                <h2>After you submit</h2>
-              </div>
-              <div className="follow-up-list">
-                {followUpSteps.map((step) => (
-                  <div className="follow-up-item" key={step}>
-                    <span className="follow-up-index">•</span>
-                    <p>{step}</p>
-                  </div>
-                ))}
-              </div>
-            </section>
-
-            <section className="panel">
-              <div className="panel-heading">
-                <span className="eyebrow">Booking Status</span>
-                <h2>Latest submission</h2>
+                <span className="section-tag red">Cart Summary</span>
+                <h2>{totalQuantity} cylinder{totalQuantity === 1 ? "" : "s"} selected</h2>
               </div>
 
-              {receipt ? (
-                <>
-                  <div className="receipt-card">
-                    <div className="receipt-row">
-                      <span>Reference</span>
-                      <strong>{receipt.id}</strong>
-                    </div>
-                    <div className="receipt-row">
-                      <span>Status</span>
-                      <strong>{receipt.status}</strong>
-                    </div>
-                    <div className="receipt-row">
-                      <span>Customer</span>
-                      <strong>{receipt.customerName}</strong>
-                    </div>
-                    <div className="receipt-row">
-                      <span>Order</span>
-                      <strong>
-                        {receipt.quantity} x {receipt.cylinderSizeKg}kg
-                      </strong>
-                    </div>
-                    <div className="receipt-row">
-                      <span>Payment</span>
-                      <strong>{receipt.paymentMethod}</strong>
-                    </div>
-                    {receipt.amountInr ? (
-                      <div className="receipt-row">
-                        <span>Amount</span>
-                        <strong>
-                          {receipt.currency ?? "INR"} {receipt.amountInr}
-                        </strong>
-                      </div>
-                    ) : null}
-                    {receipt.paymentStatus ? (
-                      <div className="receipt-row">
-                        <span>Payment status</span>
-                        <strong>{receipt.paymentStatus}</strong>
-                      </div>
-                    ) : null}
-                    <div className="receipt-row">
-                      <span>Created</span>
-                      <strong>{new Date(receipt.createdAt).toLocaleString()}</strong>
-                    </div>
-                  </div>
-                  <Link className="btn btn-secondary btn-block receipt-action" href={`/track?reference=${encodeURIComponent(receipt.id)}`}>
-                    Track This Order
-                  </Link>
-                </>
+              {cartItems.length === 0 ? (
+                <p className="muted-text">Your cart is empty. Add at least one cylinder to calculate the total.</p>
               ) : (
-                <p className="muted-text">
-                  Your latest confirmed booking will appear here after submission, giving customers a simple reference
-                  without exposing a public order list.
-                </p>
+                <div className="cart-lines">
+                  {cartItems.map((item) => (
+                    <div className="cart-line" key={item.product.id}>
+                      <div>
+                        <strong>{item.product.name}</strong>
+                        <span>
+                          {item.quantity} x {formatInr(item.product.priceInr)}
+                        </span>
+                      </div>
+                      <strong>{formatInr(item.lineTotalInr)}</strong>
+                    </div>
+                  ))}
+                </div>
               )}
+
+              <div className="summary-totals">
+                <div>
+                  <span>Subtotal</span>
+                  <strong>{formatInr(subtotal)}</strong>
+                </div>
+                <div>
+                  <span>Delivery fee</span>
+                  <strong>{deliveryFee === 0 ? "Free" : formatInr(deliveryFee)}</strong>
+                </div>
+                <div className="grand-total">
+                  <span>Total</span>
+                  <strong>{formatInr(total)}</strong>
+                </div>
+              </div>
             </section>
 
-            <section className="panel panel-accent">
-              <span className="card-kicker">Need help?</span>
-              <h2>Talk to the support team</h2>
-              <p>
-                For customer assistance, dealer helpdesk questions, or partnership enquiries, use the homepage contact
-                form. If you already placed an order, you can also search it by phone number or reference.
-              </p>
-              <Link className="btn btn-secondary btn-block" href="/track">
-                Open Track Order Page
-              </Link>
+            <section className="panel order-form-panel">
+              <div className="panel-heading">
+                <span className="section-tag">Customer Details</span>
+                <h2>Complete booking</h2>
+              </div>
+
+              {message && (
+                <div className={`feedback-banner ${message.type === "ok" ? "feedback-ok" : "feedback-err"}`}>
+                  {message.text}
+                </div>
+              )}
+
+              <form className="order-form" onSubmit={onSubmit}>
+                <label className="field">
+                  <span>Full name</span>
+                  <input
+                    required
+                    value={form.customerName}
+                    onChange={(event) => setForm((current) => ({ ...current, customerName: event.target.value }))}
+                    placeholder="Customer name"
+                    autoComplete="name"
+                  />
+                </label>
+                <label className="field">
+                  <span>Phone</span>
+                  <input
+                    required
+                    value={form.phone}
+                    onChange={(event) => setForm((current) => ({ ...current, phone: event.target.value }))}
+                    placeholder="+234 ..."
+                    autoComplete="tel"
+                  />
+                </label>
+                <label className="field">
+                  <span>Payment method</span>
+                  <select
+                    required
+                    value={form.paymentMethod}
+                    onChange={(event) => setForm((current) => ({ ...current, paymentMethod: event.target.value }))}
+                  >
+                    <option>Cash on delivery</option>
+                    <option>Bank transfer</option>
+                    <option>Card / POS</option>
+                    <option>Wallet</option>
+                    <option>Razorpay</option>
+                  </select>
+                  {form.paymentMethod === "Razorpay" ? (
+                    <small className="field-help">Razorpay will receive the server-calculated cart total.</small>
+                  ) : null}
+                </label>
+                <label className="field">
+                  <span>Delivery address</span>
+                  <textarea
+                    required
+                    rows={4}
+                    value={form.address}
+                    onChange={(event) => setForm((current) => ({ ...current, address: event.target.value }))}
+                    placeholder="Street, area, city"
+                  />
+                </label>
+
+                <button className="btn btn-primary btn-block" type="submit" disabled={submitting || cartItems.length === 0}>
+                  {submitting ? "Processing..." : form.paymentMethod === "Razorpay" ? `Pay ${formatInr(total)}` : "Place Order"}
+                </button>
+              </form>
             </section>
+
+            {receipt ? (
+              <section className="panel">
+                <div className="panel-heading">
+                  <span className="section-tag red">Latest Submission</span>
+                  <h2>Booking confirmed</h2>
+                </div>
+                <div className="receipt-card">
+                  <div className="receipt-row">
+                    <span>Reference</span>
+                    <strong>{receipt.id}</strong>
+                  </div>
+                  <div className="receipt-row">
+                    <span>Status</span>
+                    <strong>{receipt.status}</strong>
+                  </div>
+                  <div className="receipt-row">
+                    <span>Total</span>
+                    <strong>{formatInr(receipt.amountInr ?? total)}</strong>
+                  </div>
+                  <div className="receipt-items">
+                    {(receipt.items ?? []).map((item) => (
+                      <div className="receipt-item" key={`${receipt.id}-${item.productId}`}>
+                        <span>
+                          {item.quantity} x {item.name}
+                        </span>
+                        <strong>{formatInr(item.lineTotalInr)}</strong>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+                <Link className="btn btn-outline btn-block receipt-action" href={`/track?reference=${encodeURIComponent(receipt.id)}`}>
+                  Track This Order
+                </Link>
+              </section>
+            ) : null}
           </aside>
         </div>
       </section>

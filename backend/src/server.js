@@ -139,6 +139,56 @@ const orderFieldsSql = `
   updated_at AS "updatedAt"
 `;
 
+const productCatalog = [
+  {
+    id: "cyl-3kg",
+    name: "StockGas 3 kg Cylinder",
+    sizeKg: 3,
+    priceInr: 1250
+  },
+  {
+    id: "cyl-5kg",
+    name: "StockGas 5 kg Cylinder",
+    sizeKg: 5,
+    priceInr: 1900
+  },
+  {
+    id: "cyl-6kg",
+    name: "StockGas 6 kg Cylinder",
+    sizeKg: 6,
+    priceInr: 2200
+  },
+  {
+    id: "cyl-12-5kg",
+    name: "StockGas 12.5 kg Cylinder",
+    sizeKg: 12.5,
+    priceInr: 4300
+  },
+  {
+    id: "cyl-25kg",
+    name: "StockGas 25 kg Cylinder",
+    sizeKg: 25,
+    priceInr: 8300
+  },
+  {
+    id: "cyl-50kg",
+    name: "StockGas 50 kg Cylinder",
+    sizeKg: 50,
+    priceInr: 15800
+  }
+];
+
+const productCatalogById = new Map(productCatalog.map((product) => [product.id, product]));
+
+const orderItemsFieldsSql = `
+  product_id AS "productId",
+  name,
+  size_kg AS "sizeKg",
+  quantity,
+  unit_price_inr AS "unitPriceInr",
+  line_total_inr AS "lineTotalInr"
+`;
+
 const stripHtml = (value) => {
   if (typeof value !== "string") {
     return value;
@@ -194,15 +244,6 @@ const sanitiseBody = (body, currentKey = "") => {
 
 const makeId = (prefix) => `${prefix}-${Date.now()}`;
 
-const parseAmountInr = (value) => {
-  if (value === undefined || value === null || value === "") {
-    return null;
-  }
-
-  const parsed = Number(value);
-  return Number.isFinite(parsed) ? parsed : Number.NaN;
-};
-
 const validateOrderPayload = ({
   customerName,
   phone,
@@ -210,23 +251,18 @@ const validateOrderPayload = ({
   quantity,
   paymentMethod,
   address,
-  amountInr
+  items
 }) => {
   const sanitizedCustomerName = stripHtml(customerName);
   const sanitizedPhone = stripHtml(phone);
   const sanitizedPaymentMethod = stripHtml(paymentMethod);
   const sanitizedAddress = stripHtml(address);
-  const sizeKg = Number(cylinderSizeKg);
-  const qty = Number(quantity);
-  const parsedAmountInr = parseAmountInr(amountInr);
 
   if (
     !sanitizedCustomerName ||
     !sanitizedPhone ||
     !sanitizedPaymentMethod ||
-    !sanitizedAddress ||
-    cylinderSizeKg === undefined ||
-    quantity === undefined
+    !sanitizedAddress
   ) {
     return { error: "Missing required order fields." };
   }
@@ -235,29 +271,119 @@ const validateOrderPayload = ({
     return { error: "Phone number must contain between 7 and 15 digits." };
   }
 
-  if (!Number.isFinite(sizeKg) || sizeKg <= 0) {
-    return { error: "Cylinder size must be a valid number." };
+  const rawItems = Array.isArray(items) && items.length > 0
+    ? items
+    : cylinderSizeKg !== undefined && quantity !== undefined
+      ? [{ productId: null, cylinderSizeKg, quantity }]
+      : [];
+
+  if (rawItems.length === 0) {
+    return { error: "Add at least one cylinder item to the order." };
   }
 
-  if (!Number.isInteger(qty) || qty <= 0) {
-    return { error: "Quantity must be a whole number greater than zero." };
+  if (rawItems.length > 20) {
+    return { error: "Too many cylinder line items in one order." };
   }
 
-  if (parsedAmountInr !== null && (!Number.isFinite(parsedAmountInr) || parsedAmountInr <= 0)) {
-    return { error: "Amount must be a valid number greater than zero." };
+  const normalizedItems = [];
+
+  for (const rawItem of rawItems) {
+    const requestedQuantity = Number(rawItem?.quantity);
+    let product = rawItem?.productId ? productCatalogById.get(String(rawItem.productId)) : null;
+
+    if (!product && rawItem?.cylinderSizeKg !== undefined) {
+      const requestedSize = Number(rawItem.cylinderSizeKg);
+      product = productCatalog.find((candidate) => candidate.sizeKg === requestedSize) || null;
+    }
+
+    if (!product) {
+      return { error: "One or more cylinder items are not available in the StockGas catalog." };
+    }
+
+    if (!Number.isInteger(requestedQuantity) || requestedQuantity <= 0) {
+      return { error: "Each cylinder quantity must be a whole number greater than zero." };
+    }
+
+    const existingItem = normalizedItems.find((item) => item.productId === product.id);
+    if (existingItem) {
+      existingItem.quantity += requestedQuantity;
+      existingItem.lineTotalInr = existingItem.quantity * existingItem.unitPriceInr;
+      continue;
+    }
+
+    normalizedItems.push({
+      productId: product.id,
+      name: product.name,
+      sizeKg: product.sizeKg,
+      quantity: requestedQuantity,
+      unitPriceInr: product.priceInr,
+      lineTotalInr: product.priceInr * requestedQuantity
+    });
   }
+
+  const amountInr = normalizedItems.reduce((sum, item) => sum + item.lineTotalInr, 0);
+  const totalQuantity = normalizedItems.reduce((sum, item) => sum + item.quantity, 0);
+  const primaryItem = normalizedItems[0];
 
   return {
     payload: {
       customerName: sanitizedCustomerName,
       phone: sanitizedPhone,
-      cylinderSizeKg: sizeKg,
-      quantity: qty,
+      cylinderSizeKg: primaryItem.sizeKg,
+      quantity: totalQuantity,
       paymentMethod: sanitizedPaymentMethod,
       address: sanitizedAddress,
-      amountInr: parsedAmountInr
+      amountInr,
+      items: normalizedItems
     }
   };
+};
+
+const fetchOrderItemsMap = async (orderIds, queryable = pool) => {
+  if (!orderIds.length) {
+    return new Map();
+  }
+
+  const result = await queryable.query(
+    `SELECT order_id AS "orderId", ${orderItemsFieldsSql}
+     FROM order_items
+     WHERE order_id = ANY($1)
+     ORDER BY sort_order ASC, id ASC`,
+    [orderIds]
+  );
+
+  const itemsByOrderId = new Map();
+  for (const item of result.rows) {
+    const existing = itemsByOrderId.get(item.orderId) || [];
+    existing.push({
+      productId: item.productId,
+      name: item.name,
+      sizeKg: item.sizeKg,
+      quantity: item.quantity,
+      unitPriceInr: item.unitPriceInr,
+      lineTotalInr: item.lineTotalInr
+    });
+    itemsByOrderId.set(item.orderId, existing);
+  }
+
+  return itemsByOrderId;
+};
+
+const attachItemsToOrders = async (orders, queryable = pool) => {
+  const itemsByOrderId = await fetchOrderItemsMap(
+    orders.map((order) => order.id),
+    queryable
+  );
+
+  return orders.map((order) => ({
+    ...order,
+    items: itemsByOrderId.get(order.id) || []
+  }));
+};
+
+const attachItemsToOrder = async (order, queryable = pool) => {
+  const [withItems] = await attachItemsToOrders([order], queryable);
+  return withItems;
 };
 
 const insertOrder = async ({
@@ -268,49 +394,90 @@ const insertOrder = async ({
   paymentMethod,
   address,
   amountInr = null,
-  currency = null,
+  currency = razorpayCurrency,
   paymentStatus = "Pending",
   paymentGateway = null,
   gatewayOrderId = null,
-  gatewayPaymentId = null
+  gatewayPaymentId = null,
+  items = []
 }) => {
-  const result = await pool.query(
-    `INSERT INTO orders
-      (
-        id,
-        customer_name,
-        phone,
-        cylinder_size_kg,
-        quantity,
-        payment_method,
-        address,
-        amount_inr,
-        currency,
-        payment_status,
-        payment_gateway,
-        gateway_order_id,
-        gateway_payment_id
-      )
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
-     RETURNING ${orderFieldsSql}`,
-    [
-      makeId("SG"),
-      customerName,
-      phone,
-      cylinderSizeKg,
-      quantity,
-      paymentMethod,
-      address,
-      amountInr,
-      currency,
-      paymentStatus,
-      paymentGateway,
-      gatewayOrderId,
-      gatewayPaymentId
-    ]
-  );
+  const client = await pool.connect();
+  const orderId = makeId("SG");
 
-  return result.rows[0];
+  try {
+    await client.query("BEGIN");
+
+    const result = await client.query(
+      `INSERT INTO orders
+        (
+          id,
+          customer_name,
+          phone,
+          cylinder_size_kg,
+          quantity,
+          payment_method,
+          address,
+          amount_inr,
+          currency,
+          payment_status,
+          payment_gateway,
+          gateway_order_id,
+          gateway_payment_id
+        )
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+       RETURNING ${orderFieldsSql}`,
+      [
+        orderId,
+        customerName,
+        phone,
+        cylinderSizeKg,
+        quantity,
+        paymentMethod,
+        address,
+        amountInr,
+        currency,
+        paymentStatus,
+        paymentGateway,
+        gatewayOrderId,
+        gatewayPaymentId
+      ]
+    );
+
+    for (const [index, item] of items.entries()) {
+      await client.query(
+        `INSERT INTO order_items
+          (
+            order_id,
+            product_id,
+            name,
+            size_kg,
+            quantity,
+            unit_price_inr,
+            line_total_inr,
+            sort_order
+          )
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+        [
+          orderId,
+          item.productId,
+          item.name,
+          item.sizeKg,
+          item.quantity,
+          item.unitPriceInr,
+          item.lineTotalInr,
+          index
+        ]
+      );
+    }
+
+    await client.query("COMMIT");
+    return attachItemsToOrder(result.rows[0]);
+  } catch (error) {
+    await client.query("ROLLBACK");
+    throw error;
+  } finally {
+    client.release();
+  }
 };
 
 const asyncHandler = (handler) => (req, res, next) => {
@@ -492,6 +659,25 @@ const initializeDatabase = async () => {
   await pool.query(`ALTER TABLE orders ADD COLUMN IF NOT EXISTS gateway_payment_id TEXT;`);
   await pool.query(`ALTER TABLE orders ADD COLUMN IF NOT EXISTS cancelled_reason TEXT;`);
   await pool.query(`ALTER TABLE orders ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ DEFAULT NOW();`);
+
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS order_items (
+      id BIGSERIAL PRIMARY KEY,
+      order_id TEXT NOT NULL REFERENCES orders(id) ON DELETE CASCADE,
+      product_id TEXT NOT NULL,
+      name TEXT NOT NULL,
+      size_kg DOUBLE PRECISION NOT NULL,
+      quantity INTEGER NOT NULL,
+      unit_price_inr DOUBLE PRECISION NOT NULL,
+      line_total_inr DOUBLE PRECISION NOT NULL,
+      sort_order INTEGER NOT NULL DEFAULT 0,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+  `);
+  await pool.query(`
+    CREATE INDEX IF NOT EXISTS idx_order_items_order_id
+    ON order_items (order_id, sort_order, id);
+  `);
 
   await pool.query(`
     CREATE TABLE IF NOT EXISTS contacts (
@@ -882,11 +1068,7 @@ app.post(
       return res.status(400).json({ error: validation.error });
     }
 
-    const { customerName, phone, cylinderSizeKg, quantity, address, amountInr } = validation.payload;
-
-    if (amountInr === null) {
-      return res.status(400).json({ error: "Amount is required for Razorpay payments." });
-    }
+    const { customerName, phone, quantity, address, amountInr, items } = validation.payload;
 
     if (!isRazorpayConfigured()) {
       return res.status(500).json(razorpayConfigError);
@@ -911,8 +1093,8 @@ app.post(
             companyName: razorpayCompanyName,
             customerName,
             phone,
-            cylinderSizeKg: String(cylinderSizeKg),
-            quantity: String(quantity),
+            totalQuantity: String(quantity),
+            cartSummary: items.map((item) => `${item.quantity} x ${item.sizeKg}kg`).join(", ").slice(0, 240),
             address
           }
         })
@@ -978,7 +1160,7 @@ app.post(
     );
 
     if (existingOrder.rowCount > 0) {
-      return res.json(existingOrder.rows[0]);
+      return res.json(await attachItemsToOrder(existingOrder.rows[0]));
     }
 
     const order = await insertOrder({
@@ -1005,7 +1187,7 @@ app.get(
        ORDER BY created_at DESC`
     );
 
-    return res.json(result.rows);
+    return res.json(await attachItemsToOrders(result.rows));
   })
 );
 
@@ -1050,7 +1232,7 @@ app.get(
       params
     );
 
-    return res.json({ orders: result.rows });
+    return res.json({ orders: await attachItemsToOrders(result.rows) });
   })
 );
 
@@ -1069,7 +1251,7 @@ app.get(
       return res.status(404).json({ error: "Order not found." });
     }
 
-    return res.json(result.rows[0]);
+    return res.json(await attachItemsToOrder(result.rows[0]));
   })
 );
 

@@ -11,7 +11,7 @@ export default function ErrorPage() {
           <div className="error-content">
             <Link href="/" className="logo-link" aria-label="Stockgap Fuels home">
               <Image
-                src="/stockgas-logo.jpeg"
+                src="/stockgas-logo.png"
                 alt="STOCKGAS logo"
                 width={220}
                 height={170}

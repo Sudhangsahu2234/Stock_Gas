@@ -3,7 +3,17 @@
 import Image from "next/image";
 import Link from "next/link";
 import { useEffect, useState, type FormEvent } from "react";
+import { formatInr } from "@/lib/catalog";
 import { getApiBase } from "@/lib/api";
+
+type OrderItem = {
+  productId: string;
+  name: string;
+  sizeKg: number;
+  quantity: number;
+  unitPriceInr: number;
+  lineTotalInr: number;
+};
 
 type OrderLookup = {
   id: string;
@@ -19,6 +29,7 @@ type OrderLookup = {
   paymentStatus?: string | null;
   paymentGateway?: string | null;
   createdAt: string;
+  items?: OrderItem[];
 };
 
 type SearchMode = "reference" | "phone";
@@ -152,7 +163,7 @@ export default function TrackOrderPage() {
         <div className="shell site-header-inner">
           <Link href="/" className="brand-lockup" aria-label="Stockgap Fuels home">
             <Image
-              src="/stockgas-logo.jpeg"
+              src="/stockgas-logo.png"
               alt="STOCKGAS logo"
               width={220}
               height={170}
@@ -320,9 +331,11 @@ export default function TrackOrderPage() {
                       <strong>{order.phone}</strong>
                     </div>
                     <div className="track-result-item">
-                      <span>Cylinder</span>
+                      <span>Cylinders</span>
                       <strong>
-                        {order.quantity} x {order.cylinderSizeKg}kg
+                        {order.items && order.items.length > 0
+                          ? `${order.items.reduce((sum, item) => sum + item.quantity, 0)} item(s)`
+                          : `${order.quantity} x ${order.cylinderSizeKg}kg`}
                       </strong>
                     </div>
                     <div className="track-result-item">
@@ -332,9 +345,7 @@ export default function TrackOrderPage() {
                     {order.amountInr ? (
                       <div className="track-result-item">
                         <span>Amount</span>
-                        <strong>
-                          {order.currency ?? "INR"} {order.amountInr}
-                        </strong>
+                        <strong>{formatInr(order.amountInr)}</strong>
                       </div>
                     ) : null}
                     {order.paymentStatus ? (
@@ -352,6 +363,18 @@ export default function TrackOrderPage() {
                       <strong>{new Date(order.createdAt).toLocaleString()}</strong>
                     </div>
                   </div>
+                  {order.items && order.items.length > 0 ? (
+                    <div className="receipt-items track-items">
+                      {order.items.map((item) => (
+                        <div className="receipt-item" key={`${order.id}-${item.productId}`}>
+                          <span>
+                            {item.quantity} x {item.name}
+                          </span>
+                          <strong>{formatInr(item.lineTotalInr)}</strong>
+                        </div>
+                      ))}
+                    </div>
+                  ) : null}
                 </article>
               ))
             )}
