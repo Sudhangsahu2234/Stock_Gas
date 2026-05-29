@@ -1303,8 +1303,9 @@ const startServer = async () => {
   }
 };
 
-// ── Exports for Vercel serverless entry point (api/index.js) ──
+// ── Exports for Vercel serverless entry point ──
 export { app, initializeDatabase, cleanupRetentionData, seedDefaultAdmin };
+export default app;
 
 // Only start the HTTP listener when running locally (not on Vercel).
 // Vercel sets the VERCEL environment variable automatically.
